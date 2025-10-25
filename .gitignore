@@ -1,0 +1,25 @@
+# تجاهل مجلدات node_modules (لأنها تُنشأ بعد npm install)
+node_modules/
+
+# تجاهل مجلد البناء النهائي في React أو Vite
+dist/
+build/
+
+# تجاهل ملفات البيئة الحساسة (كلمات المرور - توكنات)
+.env
+.env.local
+.env.production
+.env.development
+
+# تجاهل ملفات الرفع المؤقتة (مثل صور أو مرفقات في مجلد uploads)
+uploads/
+
+# تجاهل ملفات cache الخاصة بالمحرر أو النظام
+*.log
+.DS_Store
+Thumbs.db
+
+# تجاهل build الخاص بالواجهة (client/dist)
+client/dist/
+server/node_modules/
+client/node_modules/
