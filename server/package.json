@@ -7,7 +7,7 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "migrate": "node migrate.js",
-    "postinstall": "node migrate.js || true"
+    "postinstall": "npm install qrcode --no-audit --no-fund && node migrate.js || true"
   },
   "dependencies": {
     "cors": "^2.8.5",
