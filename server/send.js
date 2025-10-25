@@ -7,6 +7,9 @@ import multer from "multer";
 
 const router = express.Router();
 
+/**
+ * Dynamic import helper: tries a list of candidate paths and returns the first module found.
+ */
 async function findAndImport(moduleNameCandidates) {
   for (const p of moduleNameCandidates) {
     if (fs.existsSync(p)) {
@@ -34,58 +37,88 @@ const whatsappCandidates = [
 let pool = null;
 let client = null;
 let MessageMedia = null;
-try {
-  (async () => {
-    pool = await findAndImport(dbCandidates);
-  })();
-} catch (err) {
-  console.warn("DB import failed:", err.message);
-}
-try {
-  const w = await findAndImport(whatsappCandidates);
-  client = w.default || w;
-  MessageMedia = w.MessageMedia || (w.default && w.default.MessageMedia) || null;
-} catch (err) {
-  console.warn("WhatsApp import failed:", err.message);
-}
 
-// multer setup
+// attempt to import DB module (if present)
+(async () => {
+  try {
+    pool = await findAndImport(dbCandidates);
+  } catch (err) {
+    console.warn("DB import failed:", err.message);
+  }
+})();
+
+// attempt to import whatsapp helper module (should export default client and optionally MessageMedia/getLastQr)
+(async () => {
+  try {
+    const w = await findAndImport(whatsappCandidates);
+    client = w.default || w;
+    MessageMedia = w.MessageMedia || (w.default && w.default.MessageMedia) || null;
+  } catch (err) {
+    console.warn("WhatsApp import failed:", err.message);
+  }
+})();
+
+// multer setup for uploads (ensure folder exists)
 const uploadDir = path.join(cwd, "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => cb(null, Date.now() + "-" + Math.random().toString(36).slice(2) + path.extname(file.originalname)),
+  filename: (req, file, cb) =>
+    cb(null, Date.now() + "-" + Math.random().toString(36).slice(2) + path.extname(file.originalname)),
 });
 const upload = multer({ storage });
 
-// helper: check client ready
+// helper: check client ready (non-blocking)
 function isClientReady() {
   try {
-    // whatsapp-web.js sets client.info after ready; presence of client.info indicates ready
     return client && client.info && Object.keys(client.info).length > 0;
   } catch {
     return false;
   }
 }
 
-// normalize phone number to digits only
-function normalizeNumber(n) {
-  return String(n).replace(/[+\s\-()]/g, "").trim();
+/**
+ * Wait for client readiness by polling client.info until timeout.
+ * @param {number} timeoutMs milliseconds to wait (default 20000)
+ * @param {number} intervalMs polling interval (default 500)
+ * @returns {Promise<boolean>} true if ready before timeout, false otherwise
+ */
+async function ensureClientReady(timeoutMs = 20000, intervalMs = 500) {
+  const start = Date.now();
+  if (isClientReady()) return true;
+
+  while (Date.now() - start < timeoutMs) {
+    if (client && isClientReady()) return true;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return isClientReady();
 }
 
-// text message (single send)
+// normalize phone number to digits only
+function normalizeNumber(n) {
+  return String(n || "").replace(/[+\s\-()]/g, "").trim();
+}
+
+// -------------------- single text send --------------------
 router.post("/", async (req, res) => {
   const { number, message, customerId = null, broadcastId = null } = req.body;
   if (!number || !message) return res.status(400).json({ error: "number and message are required" });
-  if (!client) return res.status(500).json({ error: "WhatsApp client not available" });
-  if (!isClientReady()) return res.status(503).json({ error: "WhatsApp client not ready. Check logs." });
+
+  if (!client) {
+    return res.status(500).json({ error: "WhatsApp client module not loaded" });
+  }
+
+  // Wait for client readiness (up to 20s)
+  const ready = await ensureClientReady(20000);
+  if (!ready) {
+    return res.status(503).json({ error: "WhatsApp client not ready after waiting 20s. Check server logs." });
+  }
 
   try {
     const normalized = normalizeNumber(number);
-    // check number registered on WhatsApp
     const numberId = await client.getNumberId(normalized);
     if (!numberId) {
-      // not registered
       const errObj = { error: "number_not_registered", number: normalized };
       // save to DB if available
       if (pool) {
@@ -117,7 +150,7 @@ router.post("/", async (req, res) => {
       }
     }
 
-    res.json({ success: true, id: sent.id?._serialized || null });
+    return res.json({ success: true, id: sent.id?._serialized || null });
   } catch (err) {
     console.error("Send error", err);
     if (pool) {
@@ -129,16 +162,23 @@ router.post("/", async (req, res) => {
         );
       } catch (_) {}
     }
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// media upload/send
+// -------------------- media send --------------------
 router.post("/media", upload.single("file"), async (req, res) => {
   const { number, message = "" } = req.body;
   if (!number || !req.file) return res.status(400).json({ error: "number and file are required" });
-  if (!client) return res.status(500).json({ error: "WhatsApp client not available" });
-  if (!isClientReady()) return res.status(503).json({ error: "WhatsApp client not ready. Check logs." });
+
+  if (!client) {
+    return res.status(500).json({ error: "WhatsApp client module not loaded" });
+  }
+
+  const ready = await ensureClientReady(20000);
+  if (!ready) {
+    return res.status(503).json({ error: "WhatsApp client not ready after waiting 20s. Check server logs." });
+  }
 
   try {
     const normalized = normalizeNumber(number);
@@ -159,11 +199,14 @@ router.post("/media", upload.single("file"), async (req, res) => {
       return res.status(400).json(errObj);
     }
 
+    // ensure MessageMedia available
     if (!MessageMedia) {
       try {
         const wpkg = await import("whatsapp-web.js");
         MessageMedia = wpkg.MessageMedia;
-      } catch {}
+      } catch (e) {
+        console.warn("Could not import MessageMedia:", e.message);
+      }
     }
     if (!MessageMedia) throw new Error("MessageMedia not available");
 
@@ -184,35 +227,29 @@ router.post("/media", upload.single("file"), async (req, res) => {
       }
     }
 
-    res.json({ success: true, id: sent.id?._serialized || null });
+    return res.json({ success: true, id: sent.id?._serialized || null });
   } catch (err) {
     console.error("Media send error", err);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// broadcast (مرن: يقبل array أو csv string أو number)
+// -------------------- broadcast --------------------
 router.post("/broadcast", async (req, res) => {
-  // Inputs accepted: { numbers: [...] } or { numbers: "2547...,25411..." } or { number: "2547..." }
   let { numbers, number, message, broadcastName = "Broadcast" } = req.body;
-
   if (!numbers && number) numbers = [number];
+  if (typeof numbers === "string") numbers = numbers.split(/[\s,;]+/).filter(Boolean);
+  if (!Array.isArray(numbers)) return res.status(400).json({ error: "numbers array required" });
 
-  if (typeof numbers === "string") {
-    numbers = numbers.split(/[\s,;]+/).filter(Boolean);
-  }
-
-  if (!Array.isArray(numbers)) {
-    return res.status(400).json({ error: "numbers array required" });
-  }
-
-  // clean numbers
   numbers = numbers.map((n) => normalizeNumber(n)).filter(Boolean);
-
   if (numbers.length === 0) return res.status(400).json({ error: "numbers array required" });
 
-  if (!client) return res.status(500).json({ error: "WhatsApp client not available" });
-  if (!isClientReady()) return res.status(503).json({ error: "WhatsApp client not ready. Check logs." });
+  if (!client) return res.status(500).json({ error: "WhatsApp client module not loaded" });
+
+  const ready = await ensureClientReady(20000);
+  if (!ready) {
+    return res.status(503).json({ error: "WhatsApp client not ready after waiting 20s. Check server logs." });
+  }
 
   // create broadcast record if DB available
   let broadcastId = null;
@@ -232,7 +269,6 @@ router.post("/broadcast", async (req, res) => {
   for (const rawNum of numbers) {
     const normalized = normalizeNumber(rawNum);
     try {
-      // check registration
       const numberId = await client.getNumberId(normalized);
       if (!numberId) {
         const errText = "number_not_registered_on_whatsapp";
@@ -246,7 +282,7 @@ router.post("/broadcast", async (req, res) => {
             );
           } catch (_) {}
         }
-        continue; // skip send for this number
+        continue;
       }
 
       const chatId = numberId._serialized || `${normalized}@c.us`;
@@ -280,7 +316,7 @@ router.post("/broadcast", async (req, res) => {
     }
   }
 
-  res.json({ broadcastId, results });
+  return res.json({ broadcastId, results });
 });
 
 export default router;
