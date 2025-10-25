@@ -1,13 +1,12 @@
-// server/migrate.js
+// migrate.js
 import dotenv from 'dotenv';
 import pkg from 'pg';
 const { Client } = pkg;
-
 dotenv.config();
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-  console.error('DATABASE_URL is not set. Set it in environment variables.');
+  console.error('DATABASE_URL not set. Set it in .env or environment variables.');
   process.exit(1);
 }
 
@@ -19,7 +18,7 @@ const client = new Client({
 (async () => {
   try {
     await client.connect();
-    console.log('Connected to DB, running migrations...');
+    console.log('Running migrations...');
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS customers (
@@ -32,8 +31,6 @@ const client = new Client({
         updated_at TIMESTAMPTZ DEFAULT now()
       );
     `);
-
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (phone);`);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS broadcasts (
@@ -63,10 +60,6 @@ const client = new Client({
         updated_at TIMESTAMPTZ DEFAULT now()
       );
     `);
-
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_broadcast_id ON messages (broadcast_id);`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_customer_id ON messages (customer_id);`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_status ON messages (status);`);
 
     console.log('Migrations finished.');
     await client.end();
