@@ -7,8 +7,27 @@ import QRCode from "qrcode";
 import fs from "fs";
 import path from "path";
 
+const SESSION_DIR = path.join(process.cwd(), ".wwebjs_auth"); // default LocalAuth folder
+const CLIENT_ID = "pyramidsmart";
+
+// If environment requests reset, remove existing session folder before initializing
+if (process.env.RESET_WA_SESSION === "true") {
+  try {
+    if (fs.existsSync(SESSION_DIR)) {
+      console.log("RESET_WA_SESSION=true -> removing WhatsApp session folder:", SESSION_DIR);
+      // recursive delete
+      fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+      console.log("Session folder removed.");
+    } else {
+      console.log("RESET_WA_SESSION=true but session folder not found:", SESSION_DIR);
+    }
+  } catch (e) {
+    console.warn("Could not remove session folder:", e.message);
+  }
+}
+
 const client = new Client({
-  authStrategy: new LocalAuth({ clientId: "pyramidsmart" }),
+  authStrategy: new LocalAuth({ clientId: CLIENT_ID }),
   puppeteer: {
     headless: true,
     args: [
@@ -24,7 +43,7 @@ const client = new Client({
 // متغير لحفظ QR في الذاكرة
 let lastQrDataUrl = null;
 
-// دالة لحفظ الكود كصورة في uploads/last_qr.png
+// helper: save QR image to uploads/last_qr.png
 async function saveQrToFile(dataUrl) {
   try {
     const uploadDir = path.join(process.cwd(), "uploads");
@@ -38,15 +57,11 @@ async function saveQrToFile(dataUrl) {
 
 client.on("qr", async (qr) => {
   try {
-    console.log("QR event received — generating image...");
-    // طباعة QR كـ ASCII في اللوج لتستطيع مسحه مباشرة من Logs
+    console.log("QR event received — generating image and ASCII in logs...");
     qrcodeTerm.generate(qr, { small: true });
 
-    // إنشاء PNG data URL
     const dataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 300 });
     lastQrDataUrl = dataUrl;
-
-    // حفظ نسخة في uploads/last_qr.png للتأكد من توفرها لصفحة /qr
     await saveQrToFile(dataUrl);
 
     console.log("✅ QR generated and saved. Visit /qr to scan it.");
@@ -60,10 +75,10 @@ client.on("authenticated", () => console.log("✅ Authenticated with WhatsApp (s
 client.on("auth_failure", (msg) => console.error("Authentication failure:", msg));
 client.on("disconnected", (reason) => console.log("WhatsApp disconnected:", reason));
 
-// بدء العميل
+// initialize client
 client.initialize();
 
-// دالة تُرجع الكود من الذاكرة أو من الملف لو موجود
+// return dataURL from memory or file
 function getLastQrDataUrl() {
   if (lastQrDataUrl) return lastQrDataUrl;
 
