@@ -7,12 +7,7 @@ const client = new Client({
   authStrategy: new LocalAuth({ clientId: "pyramidsmart" }),
   puppeteer: {
     headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--unhandled-rejections=strict",
-    ],
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--unhandled-rejections=strict"],
   },
 });
 
@@ -21,17 +16,9 @@ client.on("qr", (qr) => {
   qrcode.generate(qr, { small: true });
 });
 
-client.on("ready", () => {
-  console.log("✅ WhatsApp client is ready!");
-});
-
-client.on("auth_failure", (msg) => {
-  console.error("❌ Authentication failure:", msg);
-});
-
-client.on("disconnected", (reason) => {
-  console.log("⚠️ WhatsApp disconnected:", reason);
-});
+client.on("ready", () => console.log("✅ WhatsApp client is ready!"));
+client.on("auth_failure", (msg) => console.error("Authentication failure:", msg));
+client.on("disconnected", (reason) => console.log("WhatsApp disconnected:", reason));
 
 client.initialize();
 
