@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pyramids Mart - Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; direction: rtl; padding: 20px; background:#f7f7f7; }
+    .container { max-width:1000px; margin:0 auto; background:#fff; padding:20px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.06); }
+    input, textarea, select, button { width:100%; padding:8px; margin:6px 0; box-sizing:border-box; }
+    .row { display:flex; gap:12px; }
+    .col { flex:1; }
+    table { width:100%; border-collapse: collapse; margin-top:12px;}
+    th, td { border:1px solid #ddd; padding:8px; text-align:right; }
+    .actions { display:flex; gap:8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>لوحة التحكم - تسجيل العملاء وإرسال رسائل واتساب</h2>
+
+    <h3>إضافة عميل</h3>
+    <div>
+      <input id="name" placeholder="الاسم" />
+      <input id="phone" placeholder="رقم الهاتف (بدون +)" />
+      <input id="email" placeholder="البريد الإلكتروني (اختياري)" />
+      <button id="addCustomer">إضافة العميل</button>
+    </div>
+
+    <h3>قائمة العملاء</h3>
+    <div>
+      <button id="refresh">تحديث القائمة</button>
+      <table id="customersTable">
+        <thead><tr><th>اختر</th><th>الاسم</th><th>الهاتف</th><th>البريد</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <h3>كتابة الرسالة وإرفاق صورة</h3>
+    <div>
+      <textarea id="message" rows="4" placeholder="اكتب نص الرسالة هنا"></textarea>
+      <input type="file" id="media" accept="image/*" />
+      <div class="row">
+        <div class="col">
+          <label><input type="checkbox" id="selectAll" /> إرسال إلى الجميع</label>
+        </div>
+        <div class="col">
+          <button id="sendBtn">إرسال الرسالة</button>
+        </div>
+      </div>
+    </div>
+
+    <h3>نتيجة الإرسال</h3>
+    <div id="result" style="white-space:pre-wrap; background:#efefef;padding:8px;border-radius:6px;"></div>
+  </div>
+
+  <script>
+    const api = '';
+
+    async function fetchCustomers(){
+      const res = await fetch(api + '/api/customers');
+      const data = await res.json();
+      const tbody = document.querySelector('#customersTable tbody');
+      tbody.innerHTML = '';
+      data.forEach(c => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><input type="checkbox" class="cust" data-phone="${c.phone}" data-id="${c.id}" /></td>
+          <td>${c.name||''}</td>
+          <td>${c.phone}</td>
+          <td>${c.email||''}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    document.getElementById('refresh').addEventListener('click',fetchCustomers);
+    window.addEventListener('load', fetchCustomers);
+
+    document.getElementById('addCustomer').addEventListener('click', async ()=>{
+      const name = document.getElementById('name').value;
+      const phone = document.getElementById('phone').value;
+      const email = document.getElementById('email').value;
+      if(!phone){ alert('أدخل رقم الهاتف'); return; }
+      const res = await fetch(api + '/api/customers', {
+        method:'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ name, phone, email })
+      });
+      if(res.ok){ alert('تم الإضافة'); document.getElementById('name').value=''; document.getElementById('phone').value=''; document.getElementById('email').value=''; fetchCustomers(); }
+      else { alert('خطأ في الإضافة'); }
+    });
+
+    document.getElementById('selectAll').addEventListener('change', e=>{
+      const checked = e.target.checked;
+      document.querySelectorAll('.cust').forEach(cb=>cb.checked = checked);
+    });
+
+    document.getElementById('sendBtn').addEventListener('click', async ()=>{
+      const message = document.getElementById('message').value;
+      const sendAll = document.getElementById('selectAll').checked;
+      const fileInput = document.getElementById('media');
+
+      const form = new FormData();
+      form.append('message', message);
+      form.append('sendToAll', sendAll ? 'true' : 'false');
+      if(!sendAll){
+        const selected = Array.from(document.querySelectorAll('.cust:checked')).map(cb=>cb.dataset.phone);
+        if(selected.length === 0){ alert('اختر مستلمين أو فعل "إرسال إلى الجميع"'); return; }
+        form.append('numbers', JSON.stringify(selected));
+      }
+      if(fileInput.files.length > 0){
+        form.append('media', fileInput.files[0]);
+      }
+
+      document.getElementById('result').textContent = 'جاري الإرسال...';
+      const res = await fetch(api + '/api/send/broadcast', { method:'POST', body: form });
+      const data = await res.json();
+      document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+    });
+  </script>
+</body>
+</html>
