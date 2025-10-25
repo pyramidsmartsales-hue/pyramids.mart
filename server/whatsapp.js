@@ -21,57 +21,59 @@ const client = new Client({
   },
 });
 
-// store last QR as data URL
+// متغير لحفظ QR في الذاكرة
 let lastQrDataUrl = null;
+
+// دالة لحفظ الكود كصورة في uploads/last_qr.png
+async function saveQrToFile(dataUrl) {
+  try {
+    const uploadDir = path.join(process.cwd(), "uploads");
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+    const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
+    fs.writeFileSync(path.join(uploadDir, "last_qr.png"), base64, "base64");
+  } catch (e) {
+    console.warn("Could not save QR file:", e.message);
+  }
+}
 
 client.on("qr", async (qr) => {
   try {
-    console.log("QR event received (string). Generating PNG and ASCII in logs...");
-    // ASCII QR in logs
+    console.log("QR event received — generating image...");
+    // طباعة QR كـ ASCII في اللوج لتستطيع مسحه مباشرة من Logs
     qrcodeTerm.generate(qr, { small: true });
 
-    // create PNG dataUrl
+    // إنشاء PNG data URL
     const dataUrl = await QRCode.toDataURL(qr, { margin: 1, width: 300 });
     lastQrDataUrl = dataUrl;
 
-    // save to uploads/last_qr.png
-    try {
-      const uploadDir = path.join(process.cwd(), "uploads");
-      if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
-      const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
-      fs.writeFileSync(path.join(uploadDir, "last_qr.png"), base64, "base64");
-    } catch (e) {
-      console.warn("Could not save QR file:", e.message);
-    }
+    // حفظ نسخة في uploads/last_qr.png للتأكد من توفرها لصفحة /qr
+    await saveQrToFile(dataUrl);
 
-    console.log("QR image generated and stored in memory. Visit /qr to view it.");
+    console.log("✅ QR generated and saved. Visit /qr to scan it.");
   } catch (err) {
-    console.error("Error generating QR image:", err);
+    console.error("QR generation error:", err);
   }
 });
 
-client.on("ready", () => {
-  console.log("✅ WhatsApp client is ready!");
-});
+client.on("ready", () => console.log("✅ WhatsApp client is ready!"));
+client.on("authenticated", () => console.log("✅ Authenticated with WhatsApp (session saved)."));
+client.on("auth_failure", (msg) => console.error("Authentication failure:", msg));
+client.on("disconnected", (reason) => console.log("WhatsApp disconnected:", reason));
 
-client.on("authenticated", () => {
-  console.log("✅ Authenticated with WhatsApp (session saved).");
-});
-
-client.on("auth_failure", (msg) => {
-  console.error("Authentication failure:", msg);
-});
-
-client.on("disconnected", (reason) => {
-  console.log("WhatsApp disconnected:", reason);
-});
-
-// initialize
+// بدء العميل
 client.initialize();
 
-// helper to get last QR
+// دالة تُرجع الكود من الذاكرة أو من الملف لو موجود
 function getLastQrDataUrl() {
-  return lastQrDataUrl;
+  if (lastQrDataUrl) return lastQrDataUrl;
+
+  const filePath = path.join(process.cwd(), "uploads", "last_qr.png");
+  if (fs.existsSync(filePath)) {
+    const base64 = fs.readFileSync(filePath).toString("base64");
+    return `data:image/png;base64,${base64}`;
+  }
+
+  return null;
 }
 
 export { MessageMedia, getLastQrDataUrl };
