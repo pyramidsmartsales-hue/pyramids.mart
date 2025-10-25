@@ -1,84 +1,107 @@
-// server/routes/send.js
+// routes/send.js
 import express from 'express';
-import client from '../whatsapp.js';
 import pool from '../db.js';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { client, MessageMedia } from '../whatsapp.js';
+import { fileURLToPath } from 'url';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
 
-// Send single message
-router.post('/', async (req, res) => {
-  const { number, message, customerId = null, broadcastId = null } = req.body;
-  if (!number || !message) return res.status(400).json({ error: 'number and message are required' });
+const upload = multer({ dest: 'uploads/' });
 
-  try {
-    const chatId = `${number}@c.us`;
-    const sent = await client.sendMessage(chatId, message);
-
-    // store in DB
-    try {
-      await pool.query(
-        `INSERT INTO messages (broadcast_id, customer_id, phone, body, whatsapp_message_id, status, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,now(),now())`,
-        [broadcastId, customerId, number, message, sent.id?._serialized || null, 'sent']
-      );
-    } catch (dbErr) {
-      console.warn('Could not store message in DB', dbErr);
+// Helper to send message (text or media)
+async function sendToNumber(number, message, mediaPath = null) {
+  const chatId = `${number}@c.us`;
+  if (mediaPath) {
+    const media = MessageMedia.fromFilePath(mediaPath);
+    if (message && message.trim()) {
+      // send text then media
+      await client.sendMessage(chatId, message);
     }
-
-    res.json({ success: true, id: sent.id?._serialized || null });
-  } catch (err) {
-    console.error('Send error', err);
-    // store failure in DB
-    try {
-      await pool.query(
-        `INSERT INTO messages (broadcast_id, customer_id, phone, body, status, error_text, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,now(),now())`,
-        [broadcastId, customerId, number, message, 'failed', err.message]
-      );
-    } catch (_) {}
-    res.status(500).json({ success: false, error: err.message });
+    const sent = await client.sendMessage(chatId, media);
+    return sent;
+  } else {
+    const sent = await client.sendMessage(chatId, message);
+    return sent;
   }
-});
+}
 
-// Broadcast endpoint
-router.post('/broadcast', async (req, res) => {
-  const { numbers, message, broadcastName = 'Broadcast' } = req.body;
-  if (!Array.isArray(numbers) || numbers.length === 0) return res.status(400).json({ error: 'numbers array required' });
+// Send broadcast - accepts either numbers array or broadcast of all customers
+router.post('/broadcast', upload.single('media'), async (req, res) => {
+  const { numbers, message, broadcastName, sendToAll } = req.body;
+  let nums = [];
+
+  if (sendToAll === 'true' || sendToAll === true) {
+    // fetch all numbers from DB
+    try {
+      const r = await pool.query('SELECT phone,id FROM customers');
+      nums = r.rows.map(r=>({phone:r.phone, id:r.id}));
+    } catch (err) {
+      return res.status(500).json({ error: 'DB error fetching customers' });
+    }
+  } else if (numbers) {
+    try {
+      const parsed = typeof numbers === 'string' ? JSON.parse(numbers) : numbers;
+      nums = parsed.map(n => ({ phone: n, id: null }));
+    } catch (err) {
+      return res.status(400).json({ error: 'numbers must be JSON array' });
+    }
+  } else {
+    return res.status(400).json({ error: 'no recipients provided' });
+  }
 
   // create broadcast record
   let broadcastId = null;
   try {
     const r = await pool.query(
-      `INSERT INTO broadcasts (name, message, created_at) VALUES ($1,$2,now()) RETURNING id`,
-      [broadcastName, message]
+      `INSERT INTO broadcasts (name, message, status, created_at) VALUES ($1,$2,$3,now()) RETURNING id`,
+      [broadcastName||'Broadcast', message||'', 'sending']
     );
     broadcastId = r.rows[0].id;
   } catch (err) {
-    console.warn('Could not create broadcast record', err);
+    console.warn('Cannot create broadcast record', err);
+  }
+
+  // handle media file if uploaded
+  let mediaPath = null;
+  if (req.file) {
+    const ext = path.extname(req.file.originalname) || '';
+    const newName = path.join('uploads', `${uuidv4()}${ext}`);
+    fs.renameSync(req.file.path, newName);
+    mediaPath = newName;
   }
 
   const results = [];
-  for (const num of numbers) {
+  for (const item of nums) {
+    const number = item.phone.replace(/\D/g,''); // clean
     try {
-      const chatId = `${num}@c.us`;
-      const r = await client.sendMessage(chatId, message);
-      // save per-message record
+      const sent = await sendToNumber(number, message||'', mediaPath);
+      // save message
       await pool.query(
-        `INSERT INTO messages (broadcast_id, phone, body, whatsapp_message_id, status, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,now(),now())`,
-        [broadcastId, num, message, r.id?._serialized || null, 'sent']
+        `INSERT INTO messages (broadcast_id, customer_id, phone, body, whatsapp_message_id, status, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,now(),now())`,
+        [broadcastId, item.id, number, message||'', sent.id?._serialized || null, 'sent']
       );
-      results.push({ number: num, status: 'sent' });
+      results.push({ number, status: 'sent' });
     } catch (err) {
-      results.push({ number: num, status: 'failed', error: err.message });
+      console.error('Send error for', number, err);
       try {
         await pool.query(
-          `INSERT INTO messages (broadcast_id, phone, body, status, error_text, created_at, updated_at)
-           VALUES ($1,$2,$3,$4,$5,now(),now())`,
-          [broadcastId, num, message, 'failed', err.message]
+          `INSERT INTO messages (broadcast_id, customer_id, phone, body, status, error_text, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,now(),now())`,
+          [broadcastId, item.id, number, message||'', 'failed', (err && err.message) || String(err)]
         );
-      } catch (_) {}
+      } catch (e){}
+      results.push({ number, status: 'failed', error: err.message || String(err) });
     }
+  }
+
+  // cleanup uploaded file (optional)
+  if (mediaPath) {
+    try { fs.unlinkSync(mediaPath); } catch (e) {}
   }
 
   res.json({ broadcastId, results });
