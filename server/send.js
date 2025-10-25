@@ -41,7 +41,6 @@ try {
 }
 try {
   const w = await findAndImport(whatsappCandidates);
-  // whatsapp.js exports default client and may export MessageMedia
   client = w.default || w;
   MessageMedia = w.MessageMedia || (w.default && w.default.MessageMedia) || null;
 } catch (err) {
@@ -64,7 +63,7 @@ router.post("/", async (req, res) => {
   if (!client) return res.status(500).json({ error: "WhatsApp client not available" });
 
   try {
-    const chatId = `${number}@c.us`;
+    const chatId = `${String(number).replace(/[+\s\-()]/g, "")}@c.us`;
     const sent = await client.sendMessage(chatId, message);
 
     if (pool) {
@@ -72,7 +71,7 @@ router.post("/", async (req, res) => {
         await pool.query(
           `INSERT INTO messages (broadcast_id, customer_id, phone, body, whatsapp_message_id, status, created_at, updated_at)
            VALUES ($1,$2,$3,$4,$5,$6,now(),now())`,
-          [broadcastId, customerId, number, message, sent.id?._serialized || null, "sent"]
+          [broadcastId, customerId, String(number).replace(/[+\s\-()]/g, ""), message, sent.id?._serialized || null, "sent"]
         );
       } catch (e) {
         console.warn("Could not save message:", e.message);
@@ -87,7 +86,7 @@ router.post("/", async (req, res) => {
         await pool.query(
           `INSERT INTO messages (broadcast_id, customer_id, phone, body, status, error_text, created_at, updated_at)
            VALUES ($1,$2,$3,$4,$5,$6,now(),now())`,
-          [broadcastId, customerId, number, message, "failed", err.message]
+          [broadcastId, customerId, String(number).replace(/[+\s\-()]/g, ""), message, "failed", err.message]
         );
       } catch (_) {}
     }
@@ -104,7 +103,6 @@ router.post("/media", upload.single("file"), async (req, res) => {
   try {
     const filePath = req.file.path;
     if (!MessageMedia) {
-      // try to dynamically require MessageMedia from whatsapp-web.js if not exported
       try {
         const wpkg = await import("whatsapp-web.js");
         MessageMedia = wpkg.MessageMedia;
@@ -113,7 +111,7 @@ router.post("/media", upload.single("file"), async (req, res) => {
     if (!MessageMedia) throw new Error("MessageMedia not available");
 
     const media = MessageMedia.fromFilePath(filePath);
-    const chatId = `${number}@c.us`;
+    const chatId = `${String(number).replace(/[+\s\-()]/g, "")}@c.us`;
     const sent = await client.sendMessage(chatId, media, { caption: message });
 
     if (pool) {
@@ -121,7 +119,7 @@ router.post("/media", upload.single("file"), async (req, res) => {
         await pool.query(
           `INSERT INTO messages (phone, body, media_path, whatsapp_message_id, status, created_at, updated_at)
            VALUES ($1,$2,$3,$4,$5,now(),now())`,
-          [number, message, filePath, sent.id?._serialized || null, "sent"]
+          [String(number).replace(/[+\s\-()]/g, ""), message, filePath, sent.id?._serialized || null, "sent"]
         );
       } catch (e) {
         console.warn("Could not save media message:", e.message);
@@ -135,12 +133,29 @@ router.post("/media", upload.single("file"), async (req, res) => {
   }
 });
 
-// broadcast
+// broadcast (مرن: يقبل array أو csv string أو number)
 router.post("/broadcast", async (req, res) => {
-  const { numbers, message, broadcastName = "Broadcast" } = req.body;
-  if (!Array.isArray(numbers) || numbers.length === 0) return res.status(400).json({ error: "numbers array required" });
+  // Inputs accepted: { numbers: [...] } or { numbers: "2547...,25411..." } or { number: "2547..." }
+  let { numbers, number, message, broadcastName = "Broadcast" } = req.body;
+
+  if (!numbers && number) numbers = [number];
+
+  if (typeof numbers === "string") {
+    numbers = numbers.split(/[\s,;]+/).filter(Boolean);
+  }
+
+  if (!Array.isArray(numbers)) {
+    return res.status(400).json({ error: "numbers array required" });
+  }
+
+  // clean numbers
+  numbers = numbers.map((n) => String(n).replace(/[+\s\-()]/g, "").trim()).filter(Boolean);
+
+  if (numbers.length === 0) return res.status(400).json({ error: "numbers array required" });
+
   if (!client) return res.status(500).json({ error: "WhatsApp client not available" });
 
+  // create broadcast record if DB available
   let broadcastId = null;
   if (pool) {
     try {
@@ -155,28 +170,32 @@ router.post("/broadcast", async (req, res) => {
   }
 
   const results = [];
-  for (const num of numbers) {
+  for (const rawNum of numbers) {
     try {
-      const chatId = `${num}@c.us`;
+      const chatId = `${String(rawNum)}@c.us`;
       const sent = await client.sendMessage(chatId, message);
+
       if (pool) {
         try {
           await pool.query(
             `INSERT INTO messages (broadcast_id, phone, body, whatsapp_message_id, status, created_at, updated_at)
              VALUES ($1,$2,$3,$4,$5,now(),now())`,
-            [broadcastId, num, message, sent.id?._serialized || null, "sent"]
+            [broadcastId, String(rawNum), message, sent.id?._serialized || null, "sent"]
           );
-        } catch (e) {}
+        } catch (e) {
+          console.warn("Could not save broadcast message:", e.message);
+        }
       }
-      results.push({ number: num, status: "sent" });
+
+      results.push({ number: String(rawNum), status: "sent" });
     } catch (err) {
-      results.push({ number: num, status: "failed", error: err.message });
+      results.push({ number: String(rawNum), status: "failed", error: err.message });
       if (pool) {
         try {
           await pool.query(
             `INSERT INTO messages (broadcast_id, phone, body, status, error_text, created_at, updated_at)
              VALUES ($1,$2,$3,$4,$5,now(),now())`,
-            [broadcastId, num, message, "failed", err.message]
+            [broadcastId, String(rawNum), message, "failed", err.message]
           );
         } catch (_) {}
       }

@@ -13,7 +13,7 @@ app.use(express.json());
 
 const __dirname = path.resolve();
 
-// حاول استيراد الروترات (هي ستصدر الـ Router كـ default)
+// محاولة تحميل routers من مواقع متعددة (إذا وجدت)
 async function loadRouterCandidates() {
   const candidates = [
     path.join(__dirname, "customers.js"),
@@ -62,14 +62,55 @@ async function loadRouterCandidates() {
     app.use("/api/send", r);
   }
 
+  // Attempt to import whatsapp helper to serve /qr (if available)
+  let getLastQrDataUrl = null;
+  try {
+    const w = await import(`file://${path.join(__dirname, "whatsapp.js")}`);
+    getLastQrDataUrl = w.getLastQrDataUrl || w.default?.getLastQrDataUrl || null;
+    // Some versions export named function; others export directly. We try common variants.
+    if (!getLastQrDataUrl && w.getLastQrDataUrl === undefined && w.default?.getLastQrDataUrl === undefined && w.getLastQrDataUrl === undefined) {
+      // if no function, but module exported function as named export
+      getLastQrDataUrl = w.getLastQrDataUrl || null;
+    }
+  } catch (e) {
+    console.warn("whatsapp.js not loadable for /qr route:", e.message);
+  }
+
   // Health
   app.get("/health", (req, res) => res.json({ status: "ok", time: new Date().toISOString() }));
 
-  // Static (serve index.html if exists)
+  // /qr route: show last QR image (if whatsapp.js stores it)
+  app.get("/qr", (req, res) => {
+    try {
+      if (!getLastQrDataUrl) {
+        return res.send(`<h3>No QR available right now.</h3>
+          <p>Either the WhatsApp client is already authenticated, or the server hasn't emitted a QR yet. Check logs for 'QR event received'.</p>
+          <p>Also ensure whatsapp.js exports getLastQrDataUrl and you installed the 'qrcode' package.</p>`);
+      }
+      const dataUrl = getLastQrDataUrl();
+      if (!dataUrl) {
+        return res.send(`<h3>No QR available right now.</h3>
+          <p>Check server logs for "QR event received".</p>`);
+      }
+      return res.send(`
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;font-family:Arial">
+          <h2>Scan this QR with WhatsApp (Linked devices → Link a device)</h2>
+          <img src="${dataUrl}" alt="whatsapp-qr" style="width:300px;height:300px;border:1px solid #ddd;padding:8px;background:#fff"/>
+          <p style="color:#666">If it does not appear, check server logs in Render for the 'qr' event.</p>
+        </div>
+      `);
+    } catch (err) {
+      console.error("Error serving /qr:", err);
+      res.status(500).send("Internal error");
+    }
+  });
+
+  // Static files (index.html etc)
   const staticDir = path.join(__dirname);
   app.use(express.static(staticDir));
 
-  app.get(/^\/(?!api).*/, (req, res) => {
+  // Any non-API and non-QR route -> index.html (SPA)
+  app.get(/^\/(?!api|qr).*/, (req, res) => {
     const indexPath = path.join(staticDir, "index.html");
     if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
     return res.send("✅ Pyramids Mart Server is running successfully!");
