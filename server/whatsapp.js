@@ -1,56 +1,100 @@
 // whatsapp.js
-// حفظ واستعادة جلسة WhatsApp عبر Cloudinary لضمان الثبات بين النشرات (deploys)
+// helper لدمج whatsapp-web.js (اختياري). هذا الملف يوفر:
+// - exported: client (when initialized), MessageMedia (class), ensureClientReady(timeout), getNumberIdSafe(number),
+//   normalizeNumber(number), getClient()
 
-import fs from "fs";
 import path from "path";
-import qrcode from "qrcode";
-import qrcodeTerminal from "qrcode-terminal";
-import AdmZip from "adm-zip";
-import axios from "axios";
-import { v2 as cloudinary } from "cloudinary";
+import fs from "fs";
+import qrcodeTerminal from "qrcode-terminal"; // لإظهار QR في الطرفية
 
-// Robust import for whatsapp-web.js (works if it's CommonJS or ESM)
-let Client, LocalAuth, MessageMedia;
-try {
-  // dynamic import so Node resolves appropriately
-  const mod = await import("whatsapp-web.js");
-  // If module is CommonJS, mod.default will be the exported object
-  const root = mod.default || mod;
-  Client = root.Client || root.client || undefined;
-  LocalAuth = root.LocalAuth || root.localAuth || undefined;
-  MessageMedia = root.MessageMedia || root.messageMedia || undefined;
-} catch (err) {
-  console.error("Failed to import whatsapp-web.js:", err.message || err);
-  // let the rest run — later code will fail more clearly if not available
+let client = null;
+let MessageMedia = null;
+let ready = false;
+
+async function tryLoadWhatsappWeb() {
+  try {
+    // dynamic import; this will fail if whatsapp-web.js isn't installed (that's fine)
+    const mod = await import("whatsapp-web.js");
+    const Client = mod.Client || (mod.default && mod.default.Client) || mod;
+    MessageMedia = mod.MessageMedia || (mod.default && mod.default.MessageMedia) || mod.MessageMedia;
+    const LocalAuth = mod.LocalAuth || (mod.default && mod.default.LocalAuth);
+
+    if (!Client) {
+      console.warn("whatsapp-web.js Client not found in module exports.");
+      return null;
+    }
+
+    // Create client with LocalAuth for persistence
+    const opts = {};
+    if (LocalAuth) opts.authStrategy = new LocalAuth({ dataPath: "./.wwebjs_auth" });
+
+    client = new Client(opts);
+
+    client.on("ready", () => {
+      ready = true;
+      console.info("✅ WhatsApp client is ready.");
+    });
+
+    client.on("auth_failure", (msg) => {
+      console.warn("❌ WhatsApp auth failure:", msg);
+    });
+
+    client.on("disconnected", (reason) => {
+      ready = false;
+      console.warn("⚠️ WhatsApp disconnected:", reason);
+    });
+
+    // عرض رمز QR في الطرفية للمسح
+    client.on("qr", (qr) => {
+      console.log("\n📱 WhatsApp QR code received — scan it using WhatsApp on your phone:\n");
+      qrcodeTerminal.generate(qr, { small: true });
+      console.log("\n(إذا لم يظهر الكود بشكل صحيح، تأكد من أن الخط في الطرفية يدعم رموز ASCII)\n");
+    });
+
+    // start client
+    await client.initialize();
+    return client;
+  } catch (err) {
+    console.warn("whatsapp-web.js not available or failed to initialize:", err && err.message ? err.message : err);
+    client = null;
+    return null;
+  }
 }
 
-// ensure we actually got the required constructors
-if (!Client) {
-  throw new Error("whatsapp-web.js Client not available after import. Ensure package is installed and compatible.");
+export async function getClient() {
+  if (client) return client;
+  return await tryLoadWhatsappWeb();
 }
 
-const cwd = process.cwd();
-const uploadsDir = path.join(cwd, "uploads");
-const authDir = path.join(cwd, ".wwebjs_auth");
-const lastQrFile = path.join(uploadsDir, "last_qr.png");
-const sessionZipTmp = path.join(uploadsDir, "wwebjs_auth.zip");
+export async function ensureClientReady(timeout = 15000, poll = 500) {
+  if (!client) await tryLoadWhatsappWeb();
+  if (!client) return false;
+  if (ready) return true;
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    if (ready) return true;
+    await new Promise((r) => setTimeout(r, poll));
+  }
+  return ready;
+}
 
-// ensure folders exist
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-if (!fs.existsSync(authDir)) fs.mkdirSync(authDir, { recursive: true });
+export function normalizeNumber(raw) {
+  if (!raw) return raw;
+  return String(raw).replace(/[^\d]/g, "");
+}
 
-// Cloudinary config from environment
-const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || "";
-const CLOUD_KEY = process.env.CLOUDINARY_API_KEY || "";
-const CLOUD_SECRET = process.env.CLOUDINARY_API_SECRET || "";
-const SESSION_PUBLIC_ID = process.env.SESSION_PUBLIC_ID || "wa_session_default";
+export async function getNumberIdSafe(number) {
+  if (!client) return null;
+  try {
+    if (typeof client.getNumberId === "function") {
+      return await client.getNumberId(number);
+    }
+    return number;
+  } catch (err) {
+    console.warn("getNumberIdSafe error:", err && err.message ? err.message : err);
+    return null;
+  }
+}
 
-if (CLOUD_NAME && CLOUD_KEY && CLOUD_SECRET) {
-  cloudinary.config({
-    cloud_name: CLOUD_NAME,
-    api_key: CLOUD_KEY,
-    api_secret: CLOUD_SECRET,
-    secure: true,
-  });
-} else {
-  console.warn("Cloudinary credentials not found in
+export { client, MessageMedia };
+export default { getClient, ensureClientReady, normalizeNumber, getNumberIdSafe, client, MessageMedia };
