@@ -1,9 +1,4 @@
-// send.js
-// Robust router for sending WhatsApp messages (text, media, broadcast).
-// - Dynamically imports whatsapp helper (if present) to avoid startup crash
-// - Uses multer for media uploads
-// - Provides /single, /media, /broadcast, /status endpoints
-
+// server/send.js
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -13,14 +8,13 @@ import multer from "multer";
 const router = express.Router();
 const cwd = process.cwd();
 
-// ----------------- candidates for whatsapp helper -----------------
+// candidate helper paths
 const whatsappCandidates = [
   path.join(cwd, "whatsapp.js"),
   path.join(cwd, "src", "whatsapp.js"),
   path.join(cwd, "server", "whatsapp.js"),
 ];
 
-// ----------------- dynamic loader for local module -----------------
 async function tryImportCandidates(candidates = []) {
   for (const p of candidates) {
     try {
@@ -34,11 +28,9 @@ async function tryImportCandidates(candidates = []) {
   return null;
 }
 
-// ----------------- whatsapp client placeholders -----------------
 let client = null;
 let MessageMedia = null;
 
-// try to load whatsapp helper once (non-blocking)
 (async () => {
   try {
     const mod = await tryImportCandidates(whatsappCandidates);
@@ -46,24 +38,19 @@ let MessageMedia = null;
       console.info("WhatsApp helper not found in candidates:", whatsappCandidates);
       return;
     }
-    // module may export different shapes
-    // prefer default export, otherwise named exports
     const exported = mod.default || mod;
-    // if exported is client directly
     if (exported && (typeof exported.initialize === "function" || exported.sendMessage || exported.getNumberId)) {
       client = exported;
     } else if (exported && exported.client) {
       client = exported.client;
     }
-    // MessageMedia export
     if (exported && exported.MessageMedia) MessageMedia = exported.MessageMedia;
     if (!MessageMedia) {
-      // try to load from whatsapp-web.js if already installed
       try {
         const mod2 = await import("whatsapp-web.js");
         MessageMedia = mod2.MessageMedia || (mod2.default && mod2.default.MessageMedia) || MessageMedia;
       } catch (e) {
-        // ignore; will lazy-load later if needed
+        // ignore
       }
     }
     console.info("WhatsApp helper loaded:", !!client, "MessageMedia:", !!MessageMedia);
@@ -72,7 +59,6 @@ let MessageMedia = null;
   }
 })();
 
-// ----------------- multer setup for uploads -----------------
 const uploadDir = path.join(cwd, "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -83,14 +69,12 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// ----------------- utilities -----------------
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const normalizeNumber = (n) => String(n || "").replace(/[+\s\-()]/g, "").trim();
 
 function isClientReadyQuick() {
   try {
     if (!client) return false;
-    // different helper implementations may expose readiness differently
     if (client.info && Object.keys(client.info).length > 0) return true;
     if (client.ready) return true;
     return false;
@@ -130,15 +114,11 @@ async function getNumberIdSafe(number) {
   }
 }
 
-// ----------------- endpoints -----------------
-
-// status check
 router.get("/status", (req, res) => {
   if (!client) return res.json({ loaded: false, ready: false });
   return res.json({ loaded: true, ready: isClientReadyQuick(), info: client.info || null });
 });
 
-// single text send
 router.post("/single", async (req, res) => {
   const { number, message, timeoutMs } = req.body || {};
   if (!number || !message) return res.status(400).json({ error: "number and message required" });
@@ -164,7 +144,6 @@ router.post("/single", async (req, res) => {
   }
 });
 
-// media send (multipart/form-data: file)
 router.post("/media", upload.single("file"), async (req, res) => {
   const { number, message = "", timeoutMs } = req.body || {};
   if (!number || !req.file) return res.status(400).json({ error: "number and file required" });
@@ -192,11 +171,9 @@ router.post("/media", upload.single("file"), async (req, res) => {
   }
 });
 
-// broadcast: accepts numbers array or CSV string
 router.post("/broadcast", async (req, res) => {
   let { numbers, message, concurrency = 5, timeoutMs } = req.body || {};
   if (!message) return res.status(400).json({ error: "message required" });
-
   if (!numbers) return res.status(400).json({ error: "numbers required" });
   if (typeof numbers === "string") numbers = numbers.split(/[\s,;]+/).filter(Boolean);
   if (!Array.isArray(numbers) || numbers.length === 0) return res.status(400).json({ error: "numbers array required" });
@@ -213,38 +190,18 @@ router.post("/broadcast", async (req, res) => {
     return res.status(503).json({ error: "WhatsApp client readiness error", details: e.message });
   }
 
-  // simple concurrency runner
   const results = [];
-  const pool = [];
   for (const num of numbers) {
-    const task = (async () => {
-      try {
-        const id = await getNumberIdSafe(num);
-        if (!id) return { number: num, status: "failed", error: "not_registered" };
+    try {
+      const id = await getNumberIdSafe(num);
+      if (!id) results.push({ number: num, status: "failed", error: "not_registered" });
+      else {
         await client.sendMessage(id._serialized || id, message);
-        return { number: num, status: "sent" };
-      } catch (err) {
-        return { number: num, status: "failed", error: err && err.message ? err.message : String(err) };
+        results.push({ number: num, status: "sent" });
       }
-    })();
-    pool.push(task);
-    // concurrency control
-    if (pool.length >= concurrency) {
-      const r = await Promise.race(pool);
-      results.push(r);
-      // remove resolved promises
-      for (let i = pool.length - 1; i >= 0; i--) {
-        if (pool[i].status !== undefined) {
-          pool.splice(i, 1);
-        }
-      }
+    } catch (err) {
+      results.push({ number: num, status: "failed", error: err && err.message ? err.message : String(err) });
     }
-  }
-  // wait remaining
-  const remaining = await Promise.allSettled(pool);
-  for (const p of remaining) {
-    if (p.status === "fulfilled") results.push(p.value);
-    else results.push({ status: "failed", error: p.reason && p.reason.message ? p.reason.message : String(p.reason) });
   }
 
   return res.json({ results });
