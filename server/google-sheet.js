@@ -1,4 +1,4 @@
-// google-sheet.js
+// server/google-sheet.js
 // Safe Google Sheet integration with dynamic import (no crash if library missing)
 
 export async function getCustomersFromSheet(force = false) {
@@ -17,7 +17,6 @@ export async function getCustomersFromSheet(force = false) {
   }
 
   try {
-    // dynamic import to avoid crash if library missing
     const { GoogleSpreadsheet } = await import("google-spreadsheet");
     const doc = new GoogleSpreadsheet(SHEET_ID);
 
@@ -34,15 +33,17 @@ export async function getCustomersFromSheet(force = false) {
     }
 
     const rows = await sheet.getRows();
-    return rows.map((row) => ({
-      id: row.id || null,
-      name: row.name || "",
-      phone: row.phone || "",
-      email: row.email || "",
-      created_at: row.created_at || null,
-    }));
+    return rows.map((row) => {
+      // return raw row mapped to keys — keep flexible
+      const obj = {};
+      for (const k of Object.keys(row)) {
+        if (k.startsWith("_")) continue;
+        obj[k] = row[k];
+      }
+      return obj;
+    });
   } catch (err) {
-    console.error("Google Sheet error:", err.message);
+    console.error("Google Sheet error:", err && err.message ? err.message : err);
     return [];
   }
 }
