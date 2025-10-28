@@ -13,6 +13,13 @@
     table { width:100%; border-collapse: collapse; margin-top:12px;}
     th, td { border:1px solid #ddd; padding:8px; text-align:right; }
     .actions { display:flex; gap:8px; }
+    /* modal styles */
+    #qr-modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:9999; }
+    #qr-modal .box { background:white; padding:16px; border-radius:8px; width:360px; max-width:95%; text-align:center; box-shadow:0 6px 20px rgba(0,0,0,0.25); }
+    #qr-modal img { max-width:100%; border:1px solid #eee; padding:6px; background:#fff; }
+    .small { font-size:13px; color:#666; }
+    .btn { display:inline-block; padding:8px 12px; border-radius:6px; cursor:pointer; border:1px solid #ccc; background:#f0f0f0; }
+    .btn-primary { background:#3182ce; color:#fff; border-color:#276fb3; }
   </style>
 </head>
 <body>
@@ -24,14 +31,19 @@
       <input id="name" placeholder="الاسم" />
       <input id="phone" placeholder="رقم الهاتف (بدون +)" />
       <input id="email" placeholder="البريد الإلكتروني (اختياري)" />
-      <button id="addCustomer">إضافة العميل</button>
+      <button id="addCustomer" class="btn">إضافة العميل</button>
     </div>
 
     <h3>قائمة العملاء</h3>
     <div>
-      <button id="refresh">تحديث القائمة</button>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="refresh" class="btn">تحديث القائمة</button>
+        <button id="open-qr-tab" class="btn">فتح صفحة QR في تبويب جديد</button>
+        <button id="show-qr-inline" class="btn btn-primary">عرض باركود WhatsApp داخل الصفحة</button>
+      </div>
+
       <table id="customersTable">
-        <thead><tr><th>اختر</th><th>الاسم</th><th>الهاتف</th><th>البريد</th></tr></thead>
+        <thead><tr><th style="width:60px">اختر</th><th>الاسم</th><th>الهاتف</th><th>البريد</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -40,55 +52,87 @@
     <div>
       <textarea id="message" rows="4" placeholder="اكتب نص الرسالة هنا"></textarea>
       <input type="file" id="media" accept="image/*" />
-      <div class="row">
-        <div class="col">
+      <div class="row" style="align-items:center;">
+        <div style="flex:1">
           <label><input type="checkbox" id="selectAll" /> إرسال إلى الجميع</label>
         </div>
-        <div class="col">
-          <button id="sendBtn">إرسال الرسالة</button>
+        <div style="flex:1">
+          <button id="sendBtn" class="btn btn-primary">إرسال الرسالة</button>
         </div>
       </div>
     </div>
 
     <h3>نتيجة الإرسال</h3>
-    <div id="result" style="white-space:pre-wrap; background:#efefef;padding:8px;border-radius:6px;"></div>
+    <div id="result" style="white-space:pre-wrap; background:#efefef;padding:8px;border-radius:6px; min-height:80px;"></div>
+  </div>
+
+  <!-- QR Modal -->
+  <div id="qr-modal">
+    <div class="box">
+      <h3 style="margin-top:0;">امسح هذا الباركود من واتساب</h3>
+      <div id="qr-container" style="min-height:320px; display:flex; align-items:center; justify-content:center;">
+        <div id="qr-loading" class="small">جارِ تحميل الباركود ...</div>
+        <img id="qr-image" src="" alt="QR" style="display:none" />
+      </div>
+
+      <div style="margin-top:12px; display:flex; gap:8px; justify-content:center;">
+        <button id="refresh-qr" class="btn">تحديث</button>
+        <button id="close-qr" class="btn">إغلاق</button>
+      </div>
+
+      <p class="small" style="margin-top:8px;">
+        إن لم يظهر الباركود: افتح صفحة <a href="/qr" target="_blank" rel="noopener">/qr</a> أو راجع سجلات الخادم (Logs) في Render لمعرفة حدث الـ QR.
+      </p>
+    </div>
   </div>
 
   <script>
+    // base API url (leave empty for same origin)
     const api = '';
 
+    // ---------- customers ----------
     async function fetchCustomers(){
-      const res = await fetch(api + '/api/customers');
-      const data = await res.json();
-      const tbody = document.querySelector('#customersTable tbody');
-      tbody.innerHTML = '';
-      data.forEach(c => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td><input type="checkbox" class="cust" data-phone="${c.phone}" data-id="${c.id}" /></td>
-          <td>${c.name||''}</td>
-          <td>${c.phone}</td>
-          <td>${c.email||''}</td>
-        `;
-        tbody.appendChild(tr);
-      });
+      try {
+        const res = await fetch(api + '/api/customers');
+        const data = await res.json();
+        const tbody = document.querySelector('#customersTable tbody');
+        tbody.innerHTML = '';
+        data.forEach(c => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td style="text-align:center"><input type="checkbox" class="cust" data-phone="${c.phone}" data-id="${c.id}" /></td>
+            <td>${escapeHtml(c.name||'')}</td>
+            <td>${escapeHtml(c.phone||'')}</td>
+            <td>${escapeHtml(c.email||'')}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error(err);
+        alert('خطأ في جلب العملاء. تحقق من الخادم.');
+      }
     }
 
-    document.getElementById('refresh').addEventListener('click',fetchCustomers);
+    document.getElementById('refresh').addEventListener('click', fetchCustomers);
     window.addEventListener('load', fetchCustomers);
 
     document.getElementById('addCustomer').addEventListener('click', async ()=>{
-      const name = document.getElementById('name').value;
-      const phone = document.getElementById('phone').value;
-      const email = document.getElementById('email').value;
+      const name = document.getElementById('name').value.trim();
+      const phone = document.getElementById('phone').value.trim();
+      const email = document.getElementById('email').value.trim();
       if(!phone){ alert('أدخل رقم الهاتف'); return; }
-      const res = await fetch(api + '/api/customers', {
-        method:'POST',
-        headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({ name, phone, email })
-      });
-      if(res.ok){ alert('تم الإضافة'); document.getElementById('name').value=''; document.getElementById('phone').value=''; document.getElementById('email').value=''; fetchCustomers(); }
-      else { alert('خطأ في الإضافة'); }
+      try {
+        const res = await fetch(api + '/api/customers', {
+          method:'POST',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify({ name, phone, email })
+        });
+        if(res.ok){ alert('تم الإضافة'); document.getElementById('name').value=''; document.getElementById('phone').value=''; document.getElementById('email').value=''; fetchCustomers(); }
+        else { const txt = await res.text(); alert('خطأ في الإضافة: ' + txt); }
+      } catch (err) {
+        console.error(err);
+        alert('خطأ في الإضافة. تحقق من الخادم.');
+      }
     });
 
     document.getElementById('selectAll').addEventListener('change', e=>{
@@ -96,28 +140,139 @@
       document.querySelectorAll('.cust').forEach(cb=>cb.checked = checked);
     });
 
+    // ---------- QR UI ----------
+    (function(){
+      const modal = document.getElementById('qr-modal');
+      const btn = document.getElementById('show-qr-inline');
+      const openTabBtn = document.getElementById('open-qr-tab');
+      const closeBtn = document.getElementById('close-qr');
+      const refreshBtn = document.getElementById('refresh-qr');
+      const qrImg = document.getElementById('qr-image');
+      const qrLoading = document.getElementById('qr-loading');
+
+      const qrFileUrl = '/uploads/last_qr.png';
+      const qrPageUrl = '/qr';
+
+      async function loadQrImage() {
+        qrImg.style.display = 'none';
+        qrLoading.style.display = 'block';
+        qrLoading.textContent = 'جارِ تحميل الباركود ...';
+
+        try {
+          const res = await fetch(qrFileUrl, { method: 'GET', cache: 'no-store' });
+          if (!res.ok) {
+            qrLoading.innerHTML = `لا توجد صورة باركود حالياً. <a href="${qrPageUrl}" target="_blank" rel="noopener">افتح صفحة QR</a>`;
+            return;
+          }
+          qrImg.src = qrFileUrl + '?_=' + Date.now();
+          qrImg.onload = () => {
+            qrLoading.style.display = 'none';
+            qrImg.style.display = 'block';
+          };
+          qrImg.onerror = () => {
+            qrLoading.innerHTML = `حصل خطأ بتحميل الصورة. <a href="${qrPageUrl}" target="_blank" rel="noopener">افتح صفحة QR</a>`;
+          };
+        } catch (err) {
+          qrLoading.innerHTML = `خطأ في الاتصال. <a href="${qrPageUrl}" target="_blank" rel="noopener">افتح صفحة QR</a>`;
+        }
+      }
+
+      btn.addEventListener('click', () => {
+        modal.style.display = 'flex';
+        loadQrImage();
+      });
+
+      openTabBtn.addEventListener('click', () => {
+        window.open('/qr', '_blank', 'noopener');
+      });
+
+      closeBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+      });
+
+      refreshBtn.addEventListener('click', () => {
+        loadQrImage();
+      });
+
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.style.display = 'none';
+      });
+    })();
+
+    // ---------- sending logic ----------
     document.getElementById('sendBtn').addEventListener('click', async ()=>{
-      const message = document.getElementById('message').value;
+      const message = document.getElementById('message').value || '';
       const sendAll = document.getElementById('selectAll').checked;
       const fileInput = document.getElementById('media');
 
-      const form = new FormData();
-      form.append('message', message);
-      form.append('sendToAll', sendAll ? 'true' : 'false');
-      if(!sendAll){
+      // gather recipients
+      let recipients = [];
+      if(sendAll){
+        // get all customers from the table currently shown (if empty, fetch from server)
+        const boxes = Array.from(document.querySelectorAll('.cust'));
+        if(boxes.length === 0){
+          // fetch customers and then build list
+          try {
+            const res = await fetch(api + '/api/customers');
+            const arr = await res.json();
+            recipients = arr.map(c => String(c.phone).replace(/[+()\s\-]/g,''));
+          } catch (err) {
+            alert('خطأ في جلب العملاء: ' + err.message);
+            return;
+          }
+        } else {
+          recipients = boxes.map(cb => cb.dataset.phone).filter(Boolean).map(p => String(p).replace(/[+()\s\-]/g,''));
+        }
+      } else {
         const selected = Array.from(document.querySelectorAll('.cust:checked')).map(cb=>cb.dataset.phone);
         if(selected.length === 0){ alert('اختر مستلمين أو فعل "إرسال إلى الجميع"'); return; }
-        form.append('numbers', JSON.stringify(selected));
-      }
-      if(fileInput.files.length > 0){
-        form.append('media', fileInput.files[0]);
+        recipients = selected.map(p => String(p).replace(/[+()\s\-]/g,''));
       }
 
+      if(recipients.length === 0){ alert('لا يوجد أرقام لإرسالها'); return; }
+
       document.getElementById('result').textContent = 'جاري الإرسال...';
-      const res = await fetch(api + '/api/send/broadcast', { method:'POST', body: form });
-      const data = await res.json();
-      document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+
+      // If there's a file, send media per recipient using /api/send/media
+      if(fileInput.files.length > 0){
+        const file = fileInput.files[0];
+        const promises = recipients.map(num => {
+          const fd = new FormData();
+          fd.append('number', num);
+          fd.append('message', message);
+          fd.append('file', file, file.name);
+          return fetch(api + '/api/send/media', { method:'POST', body: fd })
+            .then(r => r.json().catch(()=>({ error: 'invalid-json', status: r.status })))
+            .then(result => ({ number: num, result }));
+        });
+
+        try {
+          const results = await Promise.all(promises);
+          document.getElementById('result').textContent = JSON.stringify(results, null, 2);
+        } catch (err) {
+          document.getElementById('result').textContent = 'خطأ أثناء الإرسال: ' + err.message;
+        }
+      } else {
+        // no file — single broadcast request
+        try {
+          const res = await fetch(api + '/api/send/broadcast', {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json' },
+            body: JSON.stringify({ numbers: recipients, message })
+          });
+          const data = await res.json();
+          document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          document.getElementById('result').textContent = 'خطأ أثناء الإرسال: ' + err.message;
+        }
+      }
+
     });
+
+    // small helper to avoid HTML injection in table
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+    }
   </script>
 </body>
 </html>
