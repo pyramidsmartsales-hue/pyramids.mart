@@ -13,7 +13,7 @@ app.use(express.json());
 
 const __dirname = path.resolve();
 
-// محاولة تحميل routers من مواقع متعددة (إذا وجدت)
+// Attempt to dynamically load routers (customers, send) from multiple possible locations
 async function loadRouterCandidates() {
   const candidates = [
     path.join(__dirname, "customers.js"),
@@ -23,14 +23,14 @@ async function loadRouterCandidates() {
     path.join(__dirname, "src", "customers.js"),
     path.join(__dirname, "src", "send.js"),
     path.join(__dirname, "src", "server", "customers.js"),
-    path.join(__dirname, "src", "server", "send.js"),
+    path.join(__dirname, "src", "server", "send.js")
   ];
 
   const routers = { customers: null, send: null };
 
   for (const p of candidates) {
-    if (!fs.existsSync(p)) continue;
     try {
+      if (!fs.existsSync(p)) continue;
       const m = await import(`file://${p}`);
       const name = p.toLowerCase();
       if (name.includes("customers") && m.default) routers.customers = m.default;
@@ -62,15 +62,16 @@ async function loadRouterCandidates() {
     app.use("/api/send", r);
   }
 
-  // Attempt to import whatsapp helper to serve /qr (if available)
+  // Try to import whatsapp helper to serve /qr if available
   let getLastQrDataUrl = null;
   try {
-    const w = await import(`file://${path.join(__dirname, "whatsapp.js")}`);
-    getLastQrDataUrl = w.getLastQrDataUrl || w.default?.getLastQrDataUrl || null;
-    // Some versions export named function; others export directly. We try common variants.
-    if (!getLastQrDataUrl && w.getLastQrDataUrl === undefined && w.default?.getLastQrDataUrl === undefined && w.getLastQrDataUrl === undefined) {
-      // if no function, but module exported function as named export
-      getLastQrDataUrl = w.getLastQrDataUrl || null;
+    const wpath = path.join(__dirname, "whatsapp.js");
+    if (fs.existsSync(wpath)) {
+      const w = await import(`file://${wpath}`);
+      // Try common export patterns
+      getLastQrDataUrl = w.getLastQrDataUrl || w.default?.getLastQrDataUrl || null;
+    } else {
+      console.warn("whatsapp.js not found at", wpath);
     }
   } catch (e) {
     console.warn("whatsapp.js not loadable for /qr route:", e.message);
@@ -79,13 +80,12 @@ async function loadRouterCandidates() {
   // Health
   app.get("/health", (req, res) => res.json({ status: "ok", time: new Date().toISOString() }));
 
-  // /qr route: show last QR image (if whatsapp.js stores it)
+  // /qr route
   app.get("/qr", (req, res) => {
     try {
       if (!getLastQrDataUrl) {
         return res.send(`<h3>No QR available right now.</h3>
-          <p>Either the WhatsApp client is already authenticated, or the server hasn't emitted a QR yet. Check logs for 'QR event received'.</p>
-          <p>Also ensure whatsapp.js exports getLastQrDataUrl and you installed the 'qrcode' package.</p>`);
+          <p>Either the WhatsApp client is already authenticated, or the server hasn't emitted a QR yet. Check logs for 'QR event received'.</p>`);
       }
       const dataUrl = getLastQrDataUrl();
       if (!dataUrl) {
@@ -105,18 +105,19 @@ async function loadRouterCandidates() {
     }
   });
 
-  // Static files (index.html etc)
+  // Static files root
   const staticDir = path.join(__dirname);
   app.use(express.static(staticDir));
 
-  // Any non-API and non-QR route -> index.html (SPA)
+  // SPA fallback
   app.get(/^\/(?!api|qr).*/, (req, res) => {
     const indexPath = path.join(staticDir, "index.html");
     if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
     return res.send("✅ Pyramids Mart Server is running successfully!");
   });
 
-  const PORT = process.env.PORT || 3000;
+  // IMPORTANT: listen on process.env.PORT (Render provides it)
+  const PORT = process.env.PORT || 10000;
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
   });
